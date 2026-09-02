@@ -17,6 +17,7 @@ struct hello_circul
     wait_queue_head_t r_wait; //读等待队列
     wait_queue_head_t w_wait; //写等待队列
     struct mutex lock;     /* mutual exclusion semaphore*/
+    spinlock_t spin_lock;       //切换到自旋锁，避免死锁
     struct cdev cdev;	  /* Char device structure		*/
 };
 
@@ -48,7 +49,8 @@ static ssize_t circul_read(struct file *filp, char __user *buf, size_t count, lo
         printk(KERN_INFO "hello_circul read: interrupted by signal\n");
         return -ERESTARTSYS;
     }
-    mutex_lock_interruptible(&dev->lock);
+    //mutex_lock_interruptible(&dev->lock);
+    spin_lock(&dev->spin_lock);
     //计算可读数据量
     available = dev->head  - dev->tail;
     if (count > available)
@@ -62,16 +64,16 @@ static ssize_t circul_read(struct file *filp, char __user *buf, size_t count, lo
     size2 = count - size1;
 
     if (copy_to_user(buf, dev->buffer + offset, size1)) {
-        mutex_unlock(&dev->lock);
+        spin_unlock(&dev->spin_lock);
         return -EFAULT;
     }
     //第二次读取，是从头开始读取
     if (size2 && copy_to_user(buf + size1, dev->buffer, size2)) {
-        mutex_unlock(&dev->lock);
+        spin_unlock(&dev->spin_lock);
         return -EFAULT;
     }
     dev->tail += count; //更新读指针
-    mutex_unlock(&dev->lock);
+    spin_unlock(&dev->spin_lock);
     wake_up_interruptible(&dev->w_wait); //唤醒写等待队列    
     printk(KERN_INFO "hello_circul read\n");
     return count;
@@ -86,7 +88,7 @@ static ssize_t circul_write(struct file *filp, const char __user *buf, size_t co
         printk(KERN_INFO "hello_circul write: interrupted by signal\n");
         return -ERESTARTSYS;
     }
-    mutex_lock_interruptible(&dev->lock);
+    spin_lock(&dev->spin_lock);
     //计算可写空间量
     available = HELLO_CIRCUL_SIZE - (dev->head - dev->tail);
 
@@ -101,16 +103,16 @@ static ssize_t circul_write(struct file *filp, const char __user *buf, size_t co
     size2 = count - size1; // 4. 计算剩余的空间量（如果有的话）
 
     if (copy_from_user(dev->buffer + offset, buf, size1)) {
-        mutex_unlock(&dev->lock);
+        spin_unlock(&dev->spin_lock);
         return -EFAULT; 
     }
     //第二次写入，是从头开始写入
     if (size2 && copy_from_user(dev->buffer, buf + size1, size2)) {
-        mutex_unlock(&dev->lock);
+        spin_unlock(&dev->spin_lock);
         return -EFAULT;
     }
     dev->head += count; //更新写指针
-    mutex_unlock(&dev->lock);
+    spin_unlock(&dev->spin_lock);
     wake_up_interruptible(&dev->r_wait); //唤醒读等待队列    
     printk(KERN_INFO "hello_circul write\n");
     return count;
@@ -175,7 +177,7 @@ static int __init hello_circul_init(void)
 
     init_waitqueue_head(&hello_circul_devp->r_wait);
     init_waitqueue_head(&hello_circul_devp->w_wait);
-    mutex_init(&hello_circul_devp->lock);
+    spin_lock_init(&hello_circul_devp->spin_lock);
 
 	return 0;
 }
