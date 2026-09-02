@@ -4,7 +4,7 @@ ARCH := arm64
 # 交叉编译工具链前缀
 CROSS_COMPILE := aarch64-linux-gnu-
 
-obj-m += hello.o
+obj-m += hello.o hello_circul.o
 EXTRA_CFLAGS += -g -O0
 
 all:
