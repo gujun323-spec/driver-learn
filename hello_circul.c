@@ -41,19 +41,32 @@ static int circul_release(struct inode *inode, struct file *filp)
 static ssize_t circul_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
     struct hello_circul *dev = filp->private_data;
+    unsigned int available, offset, size1, size2;
     // 判断是否有数据可读，如果没有则阻塞等待
     if(wait_event_interruptible(dev->r_wait, dev->head != dev->tail)) // 等待读队列，直到有数据可读
     {
         printk(KERN_INFO "hello_circul read: interrupted by signal\n");
         return -ERESTARTSYS;
     }
-    mutex_lock(&dev->lock);
+    mutex_lock_interruptible(&dev->lock);
     //计算可读数据量
-    unsigned int available = dev->head  - dev->tail;
+    available = dev->head  - dev->tail;
     if (count > available)
         count = available;  
 
-    if (copy_to_user(buf, dev->buffer + (dev->tail & (HELLO_CIRCUL_SIZE - 1)), count)) {
+    // 读取数据时可能会发生环绕，因此需要分两次读取
+    offset = dev->tail & (HELLO_CIRCUL_SIZE - 1);    
+    //前半部分的大小
+    size1 = min(count, HELLO_CIRCUL_SIZE - offset);
+    //后半部分的大小
+    size2 = count - size1;
+
+    if (copy_to_user(buf, dev->buffer + offset, size1)) {
+        mutex_unlock(&dev->lock);
+        return -EFAULT;
+    }
+    //第二次读取，是从头开始读取
+    if (size2 && copy_to_user(buf + size1, dev->buffer, size2)) {
         mutex_unlock(&dev->lock);
         return -EFAULT;
     }
@@ -66,18 +79,33 @@ static ssize_t circul_read(struct file *filp, char __user *buf, size_t count, lo
 static ssize_t circul_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
     struct hello_circul *dev = filp->private_data;
+    unsigned int available, offset, size1, size2;
     // 判断是否有空间可写，如果没有则阻塞等待
     if(wait_event_interruptible(dev->w_wait, (dev->head - dev->tail) != HELLO_CIRCUL_SIZE)) // 等待写队列，直到有空间可写
     {
         printk(KERN_INFO "hello_circul write: interrupted by signal\n");
         return -ERESTARTSYS;
     }
-    mutex_lock(&dev->lock);
+    mutex_lock_interruptible(&dev->lock);
     //计算可写空间量
-    unsigned int available = HELLO_CIRCUL_SIZE - (dev->head - dev->tail);
+    available = HELLO_CIRCUL_SIZE - (dev->head - dev->tail);
+
     if (count > available)
-        count = available;      
-    if (copy_from_user(dev->buffer + (dev->head & (HELLO_CIRCUL_SIZE - 1)), buf, count)) {
+        count = available;     
+        
+    // 2. 计算当前写指针在物理数组中的起始下标
+    offset = dev->head & (HELLO_CIRCUL_SIZE - 1);  
+    // 3. 计算从当前下标到物理数组末尾的“直线空闲空间”
+    size1 = min((unsigned int)count, HELLO_CIRCUL_SIZE - offset);
+    
+    size2 = count - size1; // 4. 计算剩余的空间量（如果有的话）
+
+    if (copy_from_user(dev->buffer + offset, buf, size1)) {
+        mutex_unlock(&dev->lock);
+        return -EFAULT; 
+    }
+    //第二次写入，是从头开始写入
+    if (size2 && copy_from_user(dev->buffer, buf + size1, size2)) {
         mutex_unlock(&dev->lock);
         return -EFAULT;
     }

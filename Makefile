@@ -13,4 +13,7 @@ all:
 clean:
 	$(MAKE) -C $(KDIR) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) M=$(CURDIR) clean
 
+test:
+	$(CROSS_COMPILE)gcc -g -O2 -Wall -o test test_circul.c -lpthread
+
 .PHONY: all clean
